@@ -3,6 +3,7 @@
 
 #include "gamma.h"
 extern "C" void SystemClock_Config(void);
+void ensure_legacy_boot_mode() ;
 
 #define LED_PIN     PB6 
 #define NUM_LEDS    1
@@ -225,6 +226,7 @@ void estimate_transition_color(color start, color end, uint32_t timeframe, uint3
 
 void setup() {
   SystemClock_Config();
+  ensure_legacy_boot_mode();
   // Init uart at 115200 baud
   MySerial.begin(115200);
   MySerial.setTimeout(10);
@@ -609,6 +611,27 @@ display:
     strip.setPixelColor(0, 0);
   }
   strip.show();
+}
+
+void ensure_legacy_boot_mode() {
+    FLASH_OBProgramInitTypeDef OBInit;
+    HAL_FLASHEx_OBGetConfig(&OBInit);
+
+    if ((OBInit.USERConfig & FLASH_OPTR_nBOOT_SEL) != 0) {
+        HAL_FLASH_Unlock();
+        HAL_FLASH_OB_Unlock();
+
+        OBInit.OptionType = OPTIONBYTE_USER;
+        OBInit.USERType   = OB_USER_NBOOT_SEL;
+        OBInit.USERConfig = 0;
+
+        if (HAL_FLASHEx_OBProgram(&OBInit) == HAL_OK) {
+            HAL_FLASH_OB_Launch();
+        }
+
+        HAL_FLASH_OB_Lock();
+        HAL_FLASH_Lock();
+    }
 }
 
 /**
