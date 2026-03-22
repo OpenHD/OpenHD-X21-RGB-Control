@@ -34,10 +34,10 @@ Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 #define UART_TIMEOUT 500
 
 // Default soft transition time
-#define SOFT_TANSITION_MS 500;
+#define SOFT_TANSITION_MS 1000
 
 // Color, 24bpp, RGB
-struct color {
+struct __attribute__((packed)) color {
   uint8_t r;
   uint8_t g;
   uint8_t b;
@@ -45,7 +45,7 @@ struct color {
 
 // Animated color, includes color and delay, delay is relevant to
 // transition period AFTER the color is set, delay is 16 bit unsigned int in ms
-struct animated_color {
+struct __attribute__((packed)) animated_color {
   struct color color;
   uint16_t delay;
 };
@@ -113,7 +113,6 @@ struct __attribute__((packed)) cmd_led_breathe {
   bool soft_transition;
   bool keep_across_reboot;
   bool fatal_fault;
-  animated_color *anim;
 };
 
 // LED_BLINK enables blinking animation
@@ -129,7 +128,6 @@ struct __attribute__((packed)) cmd_led_blink {
   bool soft_transition;
   bool keep_across_reboot;
   bool fatal_fault;
-  animated_color *anim;
 };
 
 // PET_U_BOOT is triggered by SoC at u-boot stage
@@ -144,10 +142,10 @@ struct __attribute__((packed)) cmd_led_blink {
 // REBOOT is triggered by SoC before rebooting to change petting expectation
 // no arguments
 
-struct animated_color boot_anim[2] = {{{0, 255, 0}, 500}, {{0, 100, 0}, 500}};
-struct animated_color u_boot_fault_generic_anim[2] = {{{255, 0, 0}, 500}, {{100, 0, 0}, 500}};
-struct animated_color os_fault_generic_anim[2] = {{{255, 0, 0}, 500}, {{100, 100, 0}, 500}};
-struct animated_color os_hang_anim[2] = {{{255, 0, 0}, 500}, {{0, 255, 0}, 500}};
+struct animated_color boot_anim[2] = {{{0, 255, 0}, 1000}, {{0, 0, 0}, 1000}};
+struct animated_color u_boot_fault_generic_anim[2] = {{{255, 0, 0}, 1000}, {{0, 0, 0}, 1000}};
+struct animated_color os_fault_generic_anim[2] = {{{255, 0, 0}, 1000}, {{100, 100, 0}, 1000}};
+struct animated_color os_hang_anim[2] = {{{255, 0, 0}, 1000}, {{0, 255, 0}, 1000}};
 struct color booted_color = {0, 255, 0};
 
 struct current_state {
@@ -158,22 +156,20 @@ struct current_state {
   bool soft_transition;
   color current_color;
   animated_color previous_color;
-  uint16_t state_time;
+  uint32_t state_time;
   bool on;
   bool fatal_fault;
 };
 
 struct current_state state;
 struct current_state backup_state;
-uint16_t last_pet;
+uint32_t last_pet;
 enum boot_stage boot_stage;
 bool wdt_triggered;
 uint32_t rx_last_packet_time  = 0;
 uint8_t buffer[128];
 uint16_t final_len = 0;
 uint16_t buffer_pos = 0;
-
-void updateLedEffect(unsigned long current_time);
 
 uint8_t crc8(const uint8_t *data, size_t len) {
     uint8_t crc = 0x00;
@@ -202,27 +198,29 @@ bool crc8_check(const uint8_t *data, size_t len) {
     return expected_crc == computed_crc;
 }
 
-void estimate_transition_color(color start, color end, uint16_t timeframe, uint16_t timePassed, color *out) {
-    // Better save then sorry
+void estimate_transition_color(color start, color end, uint32_t timeframe, uint32_t timePassed, color *out) {
+    // Better safe then sorry
     if (timePassed >= timeframe) {
-        out->r = gamma8[end.r];
-        out->g = gamma8[end.g];
-        out->b = gamma8[end.b];
+        out->r = end.r;
+        out->g = end.g;
+        out->b = end.b;
         return;
     }
 
-    int32_t diffR = (int32_t)end.r - start.r;
-    uint8_t currentR = start.r + (diffR * (int32_t)timePassed / (int32_t)timeframe);
+    int32_t sR = (int32_t)start.r;
+    int32_t sG = (int32_t)start.g;
+    int32_t sB = (int32_t)start.b;
 
-    int32_t diffG = (int32_t)end.g - start.g;
-    uint8_t currentG = start.g + (diffG * (int32_t)timePassed / (int32_t)timeframe);
+    int32_t dR = (int32_t)end.r - sR;
+    int32_t dG = (int32_t)end.g - sG;
+    int32_t dB = (int32_t)end.b - sB;
 
-    int32_t diffB = (int32_t)end.b - start.b;
-    uint8_t currentB = start.b + (diffB * (int32_t)timePassed / (int32_t)timeframe);
-  
-    out->r = gamma8[currentR];
-    out->g = gamma8[currentG];
-    out->b = gamma8[currentB];
+    int32_t t  = (int32_t)timePassed;
+    int32_t tf = (int32_t)timeframe;
+
+    out->r = (uint8_t)(sR + (dR * t) / tf);
+    out->g = (uint8_t)(sG + (dG * t) / tf);
+    out->b = (uint8_t)(sB + (dB * t) / tf);
 }
 
 void setup() {
@@ -248,7 +246,7 @@ void setup() {
 }
 
 void loop() {
-  unsigned long current_time = millis();
+  uint32_t current_time = millis();
 
   uint16_t last_avalible = MySerial.available();
   if (!state.fatal_fault && (last_avalible >= 2 || (last_avalible >= 1 && final_len > 0))) {
@@ -266,6 +264,8 @@ void loop() {
           MySerial.readBytes(&buffer[1], min((uint16_t)(last_avalible - 1), len));
           buffer_pos += min((uint16_t)(last_avalible - 1), len);
           final_len = len;
+          // CMD
+          final_len++;
           // CRC
           final_len++;
           break;
@@ -284,6 +284,8 @@ void loop() {
           len += sizeof(cmd_led_breathe);
           buffer_pos += 1;
           final_len = len;
+          // CMD
+          final_len++;
           // CRC
           final_len++;
           MySerial.readBytes(&buffer[2], min(last_avalible - 2, final_len - buffer_pos));
@@ -304,6 +306,8 @@ void loop() {
           len += sizeof(cmd_led_blink);
           buffer_pos += 1;
           final_len = len;
+          // CMD
+          final_len++;
           // CRC
           final_len++;
           MySerial.readBytes(&buffer[2], min(last_avalible - 2, final_len - buffer_pos));
@@ -353,54 +357,70 @@ void loop() {
           state.anim_len = 1;
           state.fatal_fault = tmp->fatal_fault;
           if(tmp->soft_transition) {
+            state.previous_color.color = state.current_color;
             state.previous_color.delay = SOFT_TANSITION_MS;
             state.soft_transition = true;
+            state.anim_id = 0;
             state.state_time = current_time;
           } else {
-            // Special case, previous_color delay of 0 meas imidiate transition, not animation freeze
-            state.previous_color.delay = 0;
+            state.soft_transition = false;
+            state.current_color = state.anim[0].color;
+            state.anim_id = 0;
+            state.state_time = current_time;
           }
           break;
         }
         case LED_BREATHE: {
           // Offset by 1 to account for cmd id
           cmd_led_breathe *tmp = (cmd_led_breathe*)&buffer[1];
+          animated_color *rx_anim = (animated_color*)&buffer[1 + sizeof(cmd_led_breathe)];
           state.mode = LED_BREATHE;
           state.anim_id = 0;
 
           memset(&state.anim, 0, sizeof(state.anim));
           state.previous_color.color = state.current_color;
-          memcpy(&state.anim, tmp->anim, sizeof(animated_color) * tmp->len);
+          memcpy(state.anim, rx_anim, sizeof(animated_color) * tmp->len);
           state.anim_len = tmp->len;
           state.fatal_fault = tmp->fatal_fault;
           if(tmp->soft_transition) {
+            state.previous_color.color = state.current_color;
             state.previous_color.delay = SOFT_TANSITION_MS;
             state.soft_transition = true;
+            state.anim_id = 0;
             state.state_time = current_time;
           } else {
-            // Special case, previous_color delay of 0 meas imidiate transition, not animation freeze
-            state.previous_color.delay = 0;
+            state.soft_transition = false;
+            state.current_color = state.anim[0].color;
+            state.previous_color = state.anim[0];
+            state.anim_id = (state.anim_len > 1) ? 1 : 0;
+            state.state_time = current_time;
           }
           break;
         }
         case LED_BLINK: {
           // Offset by 1 to account for cmd id
           cmd_led_blink *tmp = (cmd_led_blink*)&buffer[1];
+          animated_color *rx_anim = (animated_color*)&buffer[1 + sizeof(cmd_led_blink)];
           state.mode = LED_BLINK;
           state.anim_id = 0;
 
           memset(&state.anim, 0, sizeof(state.anim));
           state.previous_color.color = state.current_color;
-          memcpy(&state.anim, tmp->anim, sizeof(animated_color) * tmp->len);
+          memcpy(state.anim, rx_anim, sizeof(animated_color) * tmp->len);
           state.anim_len = tmp->len;
           state.fatal_fault = tmp->fatal_fault;
           if(tmp->soft_transition) {
+            state.previous_color.color = state.current_color;
             state.previous_color.delay = SOFT_TANSITION_MS;
             state.soft_transition = true;
+            state.anim_id = 0;
             state.state_time = current_time;
           } else {
-            // Special case, previous_color delay of 0 meas imidiate transition, not animation freeze
-            state.previous_color.delay = 0;
+            state.soft_transition = false;
+            state.current_color = state.anim[0].color;
+            state.previous_color = state.anim[0];
+            state.anim_id = (state.anim_len > 1) ? 1 : 0;
+            state.state_time = current_time;
           }
           break;
         }
@@ -409,7 +429,7 @@ void loop() {
             boot_stage = U_BOOT;
             last_pet = current_time;
           } else if (boot_stage == U_BOOT) {
-            last_pet = 0;
+            last_pet = current_time;
           }
           // In any other case message is malformed
           break;
@@ -455,10 +475,11 @@ drive_led:
   // Handle WDT style tasks
   if(!state.fatal_fault) {
     switch(boot_stage) {
-      case PRE_U_BOOT:
+      case PRE_U_BOOT: {
         if(current_time - last_pet >= BOOT_TIMEOUT_U_BOOT_MS && !wdt_triggered) {
           // State is default one, no need to back up
           memset(&state.anim, 0, sizeof(state.anim));
+          state.mode = LED_BREATHE;
           state.previous_color.color = state.current_color;
           state.previous_color.delay = SOFT_TANSITION_MS;
           state.soft_transition = true;
@@ -478,10 +499,13 @@ drive_led:
           state.anim_len = sizeof(boot_anim) / sizeof(animated_color);
           wdt_triggered = false;
         }
-      case U_BOOT:
+        break;
+      }
+      case U_BOOT: {
         if(current_time - last_pet >= BOOT_TIMEOUT_USERSPACE_MS && !wdt_triggered) {
           // State is default one, no need to back up
           memset(&state.anim, 0, sizeof(state.anim));
+          state.mode = LED_BREATHE;
           state.previous_color.color = state.current_color;
           state.previous_color.delay = SOFT_TANSITION_MS;
           state.soft_transition = true;
@@ -501,20 +525,23 @@ drive_led:
           state.anim_len = sizeof(boot_anim) / sizeof(animated_color);
           wdt_triggered = false;
         }
-      case USERSPACE:
+        break;
+      }
+      case USERSPACE: {
         if(current_time - last_pet >= BOOT_TIMEOUT_USERSPACE_PERIODIC_MS && !wdt_triggered) {
           // Backup the state
           memcpy(&backup_state, &state, sizeof(state));
           memset(&state.anim, 0, sizeof(state.anim));
+          state.mode = LED_BREATHE;
           state.previous_color.color = state.current_color;
           state.previous_color.delay = SOFT_TANSITION_MS;
           state.soft_transition = true;
           state.state_time = current_time;
           memcpy(&state.anim, os_hang_anim, sizeof(os_hang_anim));
           state.anim_id = 0;
-          state.anim_len = sizeof(os_fault_generic_anim) / sizeof(animated_color);
+          state.anim_len = sizeof(os_hang_anim) / sizeof(animated_color);
           wdt_triggered = true;
-        } else if(current_time - last_pet <= BOOT_TIMEOUT_USERSPACE_MS && wdt_triggered) {
+        } else if(current_time - last_pet <= BOOT_TIMEOUT_USERSPACE_PERIODIC_MS && wdt_triggered) {
           backup_state.previous_color.color = state.current_color;
           backup_state.previous_color.delay = SOFT_TANSITION_MS;
           backup_state.soft_transition = true;
@@ -522,19 +549,25 @@ drive_led:
           memcpy(&state, &backup_state, sizeof(state));
           wdt_triggered = false;
         }
+        break;
+      }
     }
   }
   // Calculate new state
   // Calculate absolute strate time
-  uint16_t state_time = current_time - state.state_time;
+  uint32_t state_time = current_time - state.state_time;
 
   if(state.soft_transition) {
-    if(state_time == state.previous_color.delay) {
+    if(state_time >= state.previous_color.delay) {
       state.soft_transition = false;
       state.current_color = state.anim[0].color;
+      state.previous_color.color = state.anim[0].color;
+      state.anim_id = (state.anim_len > 1) ? 1 : 0;
       state.state_time = current_time;
+      goto display;
     } else {
       estimate_transition_color(state.previous_color.color, state.anim[0].color, state.previous_color.delay, state_time, &state.current_color);
+      goto display;
     }
   }
 
@@ -569,7 +602,12 @@ drive_led:
       state.state_time = current_time;
     }
   }
-  strip.setPixelColor(0, strip.Color(state.current_color.r, state.current_color.g, state.current_color.b));
+display:
+  if (state.on) {
+    strip.setPixelColor(0, strip.Color(gamma8[state.current_color.r], gamma8[state.current_color.g], gamma8[state.current_color.b]));
+  } else {
+    strip.setPixelColor(0, 0);
+  }
   strip.show();
 }
 
@@ -598,4 +636,7 @@ extern "C" void SystemClock_Config(void)
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK) {
     while (1);
   }
+
+  SET_BIT(SYSCFG->CFGR1, SYSCFG_CFGR1_PA11_RMP);
+  SET_BIT(SYSCFG->CFGR1, SYSCFG_CFGR1_PA12_RMP);
 }
